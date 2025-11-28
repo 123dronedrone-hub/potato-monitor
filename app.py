@@ -3,115 +3,289 @@ import pandas as pd
 import numpy as np
 import pydeck as pdk
 import datetime
+from PIL import Image
+from ultralytics import YOLO
+import os
 
 # --- 頁面設定 ---
-st.set_page_config(page_title="甘藷田間模擬系統", layout="wide", page_icon="🍠")
+st.set_page_config(page_title="甘藷田間智慧監測系統 Pro", layout="wide", page_icon="🍠")
 
-# --- 側邊欄設定 ---
-st.sidebar.title("🛠️ 田區環境模擬器")
-st.sidebar.subheader("1. 田區與陷阱設定")
-field_center_lat = st.sidebar.number_input("田區中心緯度", value=23.9500, format="%.4f")
-field_center_lon = st.sidebar.number_input("田區中心經度", value=120.4500, format="%.4f")
-field_size = st.sidebar.slider("田區範圍半徑 (公尺)", 50, 500, 200)
-trap_count = st.sidebar.slider("設置陷阱數量", 3, 20, 10)
+# ==========================================
+# 側邊欄：參數設定
+# ==========================================
+st.sidebar.title("⚙️ 參數設定控制台")
 
-st.sidebar.subheader("2. 作物參數")
-planting_date = st.sidebar.date_input("甘藷種植日期", datetime.date(2023, 9, 1))
-sim_duration = st.sidebar.slider("模擬天數 (從種植日開始)", 30, 150, 120)
+# 1. 田區設定 (矩形 + 周邊佈署)
+st.sidebar.subheader("1. 田區與佈署")
+field_lat = st.sidebar.number_input("田區中心緯度", value=23.9500, format="%.4f")
+field_lon = st.sidebar.number_input("田區中心經度", value=120.4500, format="%.4f")
 
-st.sidebar.subheader("3. 蟲害與環境變數")
-base_temp = st.sidebar.slider("平均氣溫 (°C)", 15, 35, 25)
-pest_pressure = st.sidebar.select_slider("外部蟲源壓力", options=["低", "中", "高", "爆發"], value="中")
-spray_day = st.sidebar.number_input("第幾天施藥 (0為不施藥)", 0, 150, 0)
+col_w, col_h = st.sidebar.columns(2)
+field_width = col_w.number_input("田區寬度 (公尺)", 50, 500, 100) # 東西向
+field_length = col_h.number_input("田區長度 (公尺)", 50, 500, 150) # 南北向
 
-# --- 核心邏輯 ---
-def generate_simulation_data():
-    data = []
-    traps = []
-    for i in range(trap_count):
-        lat_offset = np.random.uniform(-1, 1) * (field_size / 111000)
-        lon_offset = np.random.uniform(-1, 1) * (field_size / 111000)
-        traps.append({
-            'id': f'Trap_{i+1:02d}',
-            'lat': field_center_lat + lat_offset,
-            'lon': field_center_lon + lon_offset,
-            'risk_factor': np.random.uniform(0.5, 1.5) 
-        })
-    pressure_map = {"低": 0.5, "中": 1.0, "高": 2.0, "爆發": 5.0}
-    p_factor = pressure_map[pest_pressure]
+# 計算周長與建議陷阱數
+perimeter = (field_width + field_length) * 2
+suggested_traps = int(perimeter / 15) # 每15公尺一支
+min_traps = 4 # 每邊至少一支
 
-    start_datetime = datetime.datetime.combine(planting_date, datetime.time(0,0))
-    for day in range(sim_duration):
-        sim_date = start_datetime + datetime.timedelta(days=day)
-        daily_temp = base_temp + np.random.normal(0, 2) 
-        
-        # 生長階段
-        growth_stage = ""
-        crop_attraction = 1.0
-        if day < 30:
-            growth_stage = "建立期 (緩慢生長)"
-            crop_attraction = 0.2
-        elif 30 <= day < 60:
-            growth_stage = "分枝期 (莖葉生長)"
-            crop_attraction = 0.5
-        elif 60 <= day < 90:
-            growth_stage = "結薯期 (塊根開始膨大)"
-            crop_attraction = 1.5 
-        else:
-            growth_stage = "塊根肥大期 (採收前)"
-            crop_attraction = 2.5 
+st.sidebar.info(f"田區周長: {perimeter}m | 建議陷阱數 (15m間隔): {suggested_traps} 支")
+trap_count = st.sidebar.slider("實際設置陷阱數", min_traps, max(suggested_traps + 5, 20), suggested_traps)
 
-        # 施藥
-        chemical_effect = 1.0
-        if spray_day > 0 and day >= spray_day:
-            days_after_spray = day - spray_day
-            if days_after_spray < 14:
-                chemical_effect = 0.1 + (days_after_spray * 0.05) 
-        
-        for trap in traps:
-            temp_effect = max(0, (daily_temp - 15) * 0.5) 
-            base_count = (temp_effect * crop_attraction * trap['risk_factor'] * p_factor)
-            final_count = int(base_count * np.random.uniform(0.8, 1.2) * chemical_effect)
-            final_count = max(0, final_count)
-            alert = final_count > 30
+# 2. 作物與環境
+st.sidebar.subheader("2. 環境模擬參數")
+planting_date = st.sidebar.date_input("種植日期", datetime.date(2023, 9, 1))
+sim_days = st.sidebar.slider("模擬天數", 30, 150, 120)
+pest_source_direction = st.sidebar.selectbox("主要蟲源方向 (模擬入侵)", ["無特定", "北方", "東方", "南方", "西方", "東北角"])
 
-            data.append({
-                'days_after_planting': day,
-                'trap_id': trap['id'], 'latitude': trap['lat'], 'longitude': trap['lon'],
-                'temp': daily_temp, 'growth_stage': growth_stage,
-                'count': final_count, 'alert': alert
-            })
-    return pd.DataFrame(data)
-
-# --- UI 顯示 ---
-if st.button("🚀 執行田間模擬運算", type="primary"):
-    st.session_state['sim_data'] = generate_simulation_data()
-
-if 'sim_data' in st.session_state:
-    df = st.session_state['sim_data']
-    latest_day = df['days_after_planting'].max()
-    latest_df = df[df['days_after_planting'] == latest_day]
+# ==========================================
+# 核心邏輯：矩形周邊佈點演算法
+# ==========================================
+def generate_perimeter_traps(center_lat, center_lon, width, length, num_traps):
+    # 簡易座標轉換: 1度緯度 ~= 111km, 1度經度 ~= 111km * cos(lat)
+    meters_per_lat = 111000
+    meters_per_lon = 111000 * np.cos(np.radians(center_lat))
     
-    st.markdown("---")
-    st.header("📊 田間戰情儀表板")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("生長階段", latest_df.iloc[0]['growth_stage'])
-    c2.metric("今日氣溫", f"{latest_df['temp'].mean():.1f} °C")
-    c3.metric("總蟲數", f"{latest_df['count'].sum()} 隻")
-    c4.metric("警報陷阱", f"{latest_df['alert'].sum()} 個")
+    half_w = (width / 2) / meters_per_lon
+    half_l = (length / 2) / meters_per_lat
+    
+    # 定義四個角點 (逆時針: 左上, 左下, 右下, 右上)
+    # 注意: 這裡簡化為矩形，實際應用可導入 shapefile
+    corners = [
+        (center_lon - half_w, center_lat + half_l), # NW
+        (center_lon - half_w, center_lat - half_l), # SW
+        (center_lon + half_w, center_lat - half_l), # SE
+        (center_lon + half_w, center_lat + half_l), # NE
+        (center_lon - half_w, center_lat + half_l), # Close loop
+    ]
+    
+    traps = []
+    # 沿著周長均勻分布
+    total_len = (width + length) * 2
+    step = total_len / num_traps
+    
+    current_dist = 0
+    trap_idx = 0
+    
+    # 這裡使用簡化的邏輯將陷阱分配到四邊
+    # 為了模擬視覺效果，直接生成四邊上的點
+    
+    # 邊1: 北邊 (左上 -> 右上)
+    n_side1 = int(num_traps * (width / total_len))
+    # 邊2: 東邊 (右上 -> 右下)
+    n_side2 = int(num_traps * (length / total_len))
+    # 邊3: 南邊 (右下 -> 左下)
+    n_side3 = int(num_traps * (width / total_len))
+    # 邊4: 西邊 (左下 -> 左上)
+    n_side4 = num_traps - n_side1 - n_side2 - n_side3 # 剩下的
+    
+    # 生成座標函數
+    def make_line(start_p, end_p, n, side_name):
+        pts = []
+        for i in range(n):
+            r = i / max(n, 1)
+            lon = start_p[0] + (end_p[0] - start_p[0]) * r
+            lat = start_p[1] + (end_p[1] - start_p[1]) * r
+            pts.append({"lat": lat, "lon": lon, "side": side_name})
+        return pts
 
-    if latest_df['alert'].sum() > 0:
-        st.error("⚠️ 警報！部分區域蟲數過高，請參考下方熱區圖進行防治。")
+    traps.extend(make_line(corners[0], corners[3], n_side1, "北邊 (North)"))
+    traps.extend(make_line(corners[3], corners[2], n_side2, "東邊 (East)"))
+    traps.extend(make_line(corners[2], corners[1], n_side3, "南邊 (South)"))
+    traps.extend(make_line(corners[1], corners[0], n_side4, "西邊 (West)"))
+    
+    # 賦予 ID 與風險係數
+    res = []
+    for i, t in enumerate(traps):
+        # 根據蟲源方向增加風險
+        risk = 1.0
+        if pest_source_direction == "北方" and "North" in t['side']: risk = 3.0
+        if pest_source_direction == "東方" and "East" in t['side']: risk = 3.0
+        if pest_source_direction == "南方" and "South" in t['side']: risk = 3.0
+        if pest_source_direction == "西方" and "West" in t['side']: risk = 3.0
+        if pest_source_direction == "東北角" and ("North" in t['side'] or "East" in t['side']): risk = 2.5
 
-    t1, t2, t3 = st.tabs(["🗺️ 風險熱點圖", "📈 趨勢分析", "📋 數據表"])
-    with t1:
-        sel_day = st.slider("選擇日期", 0, sim_duration-1, latest_day)
-        day_df = df[df['days_after_planting'] == sel_day]
-        layer = pdk.Layer("ColumnLayer", data=day_df, get_position='[longitude, latitude]',
-            get_elevation='count', elevation_scale=10, radius=15, get_fill_color='[count*4, 255-count*4, 0, 180]', pickable=True)
-        st.pydeck_chart(pdk.Deck(initial_view_state=pdk.ViewState(latitude=field_center_lat, longitude=field_center_lon, zoom=16, pitch=50), layers=[layer], tooltip={"html": "蟲數: {count}"}))
-    with t2:
-        st.line_chart(df.groupby('days_after_planting')['count'].mean())
-    with t3: st.dataframe(df)
-else:
-    st.info("👈 請在左側點擊「執行田間模擬運算」")
+        res.append({
+            "id": f"T-{i+1:02d}",
+            "lat": t['lat'],
+            "lon": t['lon'],
+            "side": t['side'],
+            "risk_factor": risk
+        })
+    return res, corners
+
+# ==========================================
+# 應用程式本體
+# ==========================================
+
+st.title("🍠 甘藷田間智慧監測系統 Pro")
+st.caption("整合田區邊界模擬、風險熱圖與 AI 模型實測")
+
+tab1, tab2 = st.tabs(["📊 田區模擬與風險監測", "🤖 AI 模型辨識驗證"])
+
+# --- TAB 1: 模擬器 ---
+with tab1:
+    if st.button("🚀 執行田區模擬", type="primary"):
+        # 1. 生成陷阱
+        traps, corners = generate_perimeter_traps(field_lat, field_lon, field_width, field_length, trap_count)
+        
+        # 2. 生成時間序列數據
+        data = []
+        for day in range(sim_days):
+            curr_date = planting_date + datetime.timedelta(days=day)
+            
+            # 生長週期係數
+            growth_factor = 0.5
+            if 60 <= day <= 120: growth_factor = 2.0 # 結薯期蟲害高
+            
+            # 氣候係數 (隨機波動)
+            weather_factor = np.random.uniform(0.8, 1.2)
+            
+            for t in traps:
+                # 蟲數 = 基礎 * 生長 * 氣候 * 該位置風險 * 隨機
+                count = int(5 * growth_factor * weather_factor * t['risk_factor'] * np.random.uniform(0.5, 1.5))
+                data.append({
+                    "date": curr_date,
+                    "day": day,
+                    "trap_id": t['id'],
+                    "latitude": t['lat'],
+                    "longitude": t['lon'],
+                    "side": t['side'],
+                    "count": count
+                })
+        
+        df = pd.DataFrame(data)
+        st.session_state['sim_df'] = df
+        st.session_state['corners'] = corners # 儲存田區邊界供畫圖用
+
+    # 顯示結果
+    if 'sim_df' in st.session_state:
+        df = st.session_state['sim_df']
+        corners = st.session_state['corners']
+        latest_day = df['day'].max()
+        latest_df = df[df['day'] == latest_day]
+        
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.subheader("📍 田區風險熱點圖 (最新數據)")
+            # PyDeck 地圖
+            # 1. 畫出田區框線 (Polygon)
+            polygon_layer = pdk.Layer(
+                "PolygonLayer",
+                data=[{"polygon": [[p[0], p[1]] for p in corners]}],
+                get_polygon="polygon",
+                filled=True,
+                get_fill_color=[144, 238, 144, 50], # 淺綠色半透明
+                get_line_color=[0, 100, 0],
+                get_line_width=2,
+                line_width_min_pixels=1,
+            )
+            
+            # 2. 畫出陷阱點 (Scatterplot) - 顏色隨數量變紅
+            scatter_layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=latest_df,
+                get_position='[longitude, latitude]',
+                get_radius=8, # 點的大小
+                get_fill_color='[count > 30 ? 255 : 0, count > 30 ? 0 : 128, 0, 200]', # 簡單變色邏輯: >30變紅, 否則綠
+                pickable=True,
+                auto_highlight=True
+            )
+            
+            # 3. 標籤層 (顯示 ID)
+            text_layer = pdk.Layer(
+                "TextLayer",
+                data=latest_df,
+                get_position='[longitude, latitude]',
+                get_text='trap_id',
+                get_color=[0, 0, 0],
+                get_size=12,
+                get_alignment_baseline="'bottom'",
+            )
+
+            view_state = pdk.ViewState(latitude=field_lat, longitude=field_lon, zoom=16)
+            st.pydeck_chart(pdk.Deck(
+                map_style='mapbox://styles/mapbox/light-v9',
+                initial_view_state=view_state,
+                layers=[polygon_layer, scatter_layer, text_layer],
+                tooltip={"html": "<b>{trap_id}</b> ({side})<br/>蟲數: {count}"}
+            ))
+
+        with col2:
+            st.subheader("📋 蟲害重點")
+            total = latest_df['count'].sum()
+            avg = latest_df['count'].mean()
+            st.metric("全區總蟲數", f"{total}")
+            st.metric("平均單一陷阱", f"{avg:.1f}")
+            
+            # 找出最危險的方位
+            risk_side = latest_df.groupby('side')['count'].mean().idxmax()
+            st.error(f"⚠️ 高風險方位: **{risk_side}**")
+            st.markdown("建議檢查該方位之外部蟲源（如廢耕田或儲藏堆）。")
+
+        st.subheader("📈 自家田區趨勢分析")
+        st.caption("比較不同方位的陷阱數據，了解蟲害入侵動態")
+        
+        # 整理數據畫折線圖
+        trend_data = df.pivot_table(index='date', columns='side', values='count', aggfunc='mean')
+        st.line_chart(trend_data)
+
+# --- TAB 2: AI 驗證 ---
+with tab2:
+    st.header("🔬 AI 模型辨識與驗證")
+    st.markdown("""
+    在此上傳您的 **模型 (.pt)** 與 **陷阱照片**，系統將進行計數，並讓您輸入實際數量以驗證準確度。
+    """)
+
+    col_model, col_img = st.columns(2)
+    
+    with col_model:
+        model_file = st.file_uploader("1. 上傳訓練好的模型 (best.pt)", type=['pt'])
+    
+    with col_img:
+        img_file = st.file_uploader("2. 上傳陷阱照片", type=['jpg', 'png', 'jpeg'])
+
+    if model_file and img_file:
+        # 儲存暫存檔
+        with open("temp_model.pt", "wb") as f:
+            f.write(model_file.getbuffer())
+        
+        # 載入使用者模型
+        try:
+            model = YOLO("temp_model.pt")
+            
+            image = Image.open(img_file)
+            st.image(image, caption="原始照片", use_container_width=True)
+            
+            if st.button("🔍 開始辨識計數"):
+                with st.spinner("AI 正在數蟲..."):
+                    results = model.predict(image)
+                    ai_count = len(results[0].boxes)
+                    res_plotted = results[0].plot()
+                    
+                    st.image(res_plotted, caption=f"AI 辨識結果: {ai_count} 隻", use_container_width=True)
+                    
+                    # 驗證區塊
+                    st.markdown("---")
+                    st.subheader("📝 準確度驗證")
+                    real_count = st.number_input("請輸入人工清點的真實數量 (Ground Truth)", min_value=0, value=ai_count)
+                    
+                    if st.button("計算誤差"):
+                        diff = abs(ai_count - real_count)
+                        accuracy = 100 * (1 - diff / max(real_count, 1)) if real_count > 0 else 0
+                        
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("AI 計數", ai_count)
+                        c2.metric("人工計數", real_count)
+                        c3.metric("準確率", f"{accuracy:.1f}%")
+                        
+                        if accuracy > 90:
+                            st.success("模型表現優異！")
+                        elif accuracy > 70:
+                            st.warning("模型表現尚可，建議增加更多樣本訓練。")
+                        else:
+                            st.error("準確度較低，請檢查模型或照片清晰度。")
+                            
+        except Exception as e:
+            st.error(f"模型載入失敗，請確認檔案是否為 YOLOv8 格式。錯誤訊息: {e}")
