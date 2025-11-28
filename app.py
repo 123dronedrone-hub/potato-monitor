@@ -50,7 +50,6 @@ def generate_perimeter_traps(center_lat, center_lon, width, length, num_traps):
     half_l = (length / 2) / meters_per_lat
     
     # 定義四個角點 (逆時針: 左上, 左下, 右下, 右上)
-    # 注意: 這裡簡化為矩形，實際應用可導入 shapefile
     corners = [
         (center_lon - half_w, center_lat + half_l), # NW
         (center_lon - half_w, center_lat - half_l), # SW
@@ -64,20 +63,11 @@ def generate_perimeter_traps(center_lat, center_lon, width, length, num_traps):
     total_len = (width + length) * 2
     step = total_len / num_traps
     
-    current_dist = 0
-    trap_idx = 0
-    
     # 這裡使用簡化的邏輯將陷阱分配到四邊
-    # 為了模擬視覺效果，直接生成四邊上的點
-    
-    # 邊1: 北邊 (左上 -> 右上)
     n_side1 = int(num_traps * (width / total_len))
-    # 邊2: 東邊 (右上 -> 右下)
     n_side2 = int(num_traps * (length / total_len))
-    # 邊3: 南邊 (右下 -> 左下)
     n_side3 = int(num_traps * (width / total_len))
-    # 邊4: 西邊 (左下 -> 左上)
-    n_side4 = num_traps - n_side1 - n_side2 - n_side3 # 剩下的
+    n_side4 = num_traps - n_side1 - n_side2 - n_side3 
     
     # 生成座標函數
     def make_line(start_p, end_p, n, side_name):
@@ -97,7 +87,6 @@ def generate_perimeter_traps(center_lat, center_lon, width, length, num_traps):
     # 賦予 ID 與風險係數
     res = []
     for i, t in enumerate(traps):
-        # 根據蟲源方向增加風險
         risk = 1.0
         if pest_source_direction == "北方" and "North" in t['side']: risk = 3.0
         if pest_source_direction == "東方" and "East" in t['side']: risk = 3.0
@@ -136,13 +125,12 @@ with tab1:
             
             # 生長週期係數
             growth_factor = 0.5
-            if 60 <= day <= 120: growth_factor = 2.0 # 結薯期蟲害高
+            if 60 <= day <= 120: growth_factor = 2.0 
             
-            # 氣候係數 (隨機波動)
+            # 氣候係數
             weather_factor = np.random.uniform(0.8, 1.2)
             
             for t in traps:
-                # 蟲數 = 基礎 * 生長 * 氣候 * 該位置風險 * 隨機
                 count = int(5 * growth_factor * weather_factor * t['risk_factor'] * np.random.uniform(0.5, 1.5))
                 data.append({
                     "date": curr_date,
@@ -155,8 +143,12 @@ with tab1:
                 })
         
         df = pd.DataFrame(data)
+        
+        # [關鍵修正]：將日期物件轉為文字，避免地圖繪製時發生 JSON Error
+        df['date'] = df['date'].astype(str)
+        
         st.session_state['sim_df'] = df
-        st.session_state['corners'] = corners # 儲存田區邊界供畫圖用
+        st.session_state['corners'] = corners 
 
     # 顯示結果
     if 'sim_df' in st.session_state:
@@ -169,31 +161,29 @@ with tab1:
         
         with col1:
             st.subheader("📍 田區風險熱點圖 (最新數據)")
+            
             # PyDeck 地圖
-            # 1. 畫出田區框線 (Polygon)
             polygon_layer = pdk.Layer(
                 "PolygonLayer",
                 data=[{"polygon": [[p[0], p[1]] for p in corners]}],
                 get_polygon="polygon",
                 filled=True,
-                get_fill_color=[144, 238, 144, 50], # 淺綠色半透明
+                get_fill_color=[144, 238, 144, 50],
                 get_line_color=[0, 100, 0],
                 get_line_width=2,
                 line_width_min_pixels=1,
             )
             
-            # 2. 畫出陷阱點 (Scatterplot) - 顏色隨數量變紅
             scatter_layer = pdk.Layer(
                 "ScatterplotLayer",
                 data=latest_df,
                 get_position='[longitude, latitude]',
-                get_radius=8, # 點的大小
-                get_fill_color='[count > 30 ? 255 : 0, count > 30 ? 0 : 128, 0, 200]', # 簡單變色邏輯: >30變紅, 否則綠
+                get_radius=8,
+                get_fill_color='[count > 30 ? 255 : 0, count > 30 ? 0 : 128, 0, 200]',
                 pickable=True,
                 auto_highlight=True
             )
             
-            # 3. 標籤層 (顯示 ID)
             text_layer = pdk.Layer(
                 "TextLayer",
                 data=latest_df,
@@ -219,15 +209,13 @@ with tab1:
             st.metric("全區總蟲數", f"{total}")
             st.metric("平均單一陷阱", f"{avg:.1f}")
             
-            # 找出最危險的方位
             risk_side = latest_df.groupby('side')['count'].mean().idxmax()
             st.error(f"⚠️ 高風險方位: **{risk_side}**")
-            st.markdown("建議檢查該方位之外部蟲源（如廢耕田或儲藏堆）。")
+            st.markdown("建議檢查該方位之外部蟲源。")
 
         st.subheader("📈 自家田區趨勢分析")
-        st.caption("比較不同方位的陷阱數據，了解蟲害入侵動態")
         
-        # 整理數據畫折線圖
+        # 繪製折線圖
         trend_data = df.pivot_table(index='date', columns='side', values='count', aggfunc='mean')
         st.line_chart(trend_data)
 
@@ -247,11 +235,9 @@ with tab2:
         img_file = st.file_uploader("2. 上傳陷阱照片", type=['jpg', 'png', 'jpeg'])
 
     if model_file and img_file:
-        # 儲存暫存檔
         with open("temp_model.pt", "wb") as f:
             f.write(model_file.getbuffer())
         
-        # 載入使用者模型
         try:
             model = YOLO("temp_model.pt")
             
@@ -266,7 +252,6 @@ with tab2:
                     
                     st.image(res_plotted, caption=f"AI 辨識結果: {ai_count} 隻", use_container_width=True)
                     
-                    # 驗證區塊
                     st.markdown("---")
                     st.subheader("📝 準確度驗證")
                     real_count = st.number_input("請輸入人工清點的真實數量 (Ground Truth)", min_value=0, value=ai_count)
